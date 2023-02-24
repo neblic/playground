@@ -1,0 +1,24 @@
+# NOTE: the builder is expected to be run from the repo root
+
+dist:
+  name: otelcol
+  otelcol_version: 0.71.0
+  version: 0.71.0-dev
+  output_path: ./build/otelcol/src
+
+exporters:
+  - gomod: go.opentelemetry.io/collector/exporter/loggingexporter v0.71.0
+  - gomod: go.opentelemetry.io/collector/exporter/otlpexporter v0.71.0
+  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/exporter/lokiexporter v0.71.0
+processors:
+  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/processor/resourceprocessor v0.71.0
+receivers:
+  - gomod: go.opentelemetry.io/collector/receiver/otlpreceiver v0.71.0
+extensions:
+  - import: github.com/neblic/platform/controlplane/server/otelcolext
+    gomod: github.com/neblic/platform v0.0.0
+    path: ${LOCAL_PLATFORM_MODULE}
+  - import: github.com/neblic/platform/controlplane/server/otelcolext/bearerauthextension
+    gomod: github.com/neblic/platform v0.0.0
+    path: ${LOCAL_PLATFORM_MODULE}
+  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/extension/healthcheckextension v0.71.0

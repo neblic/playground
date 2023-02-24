@@ -1,0 +1,239 @@
+services:
+
+  zookeeper:
+    image: confluentinc/cp-zookeeper:6.1.9
+    healthcheck:
+      test: nc -z localhost 2181 || exit -1
+      interval: 10s
+      retries: 5
+    restart: always
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+
+  kafka:
+    image: confluentinc/cp-kafka:6.1.9
+    healthcheck:
+      test: kafka-topics --bootstrap-server localhost:29092 --list
+      interval: 10s
+      retries: 5
+    restart: always
+    depends_on:
+      zookeeper:
+        condition: service_healthy
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,PLAINTEXT_HOST://localhost:29092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+
+  loki:
+    image: grafana/loki:2.7.2
+    command: -config.file=/etc/loki/local-config.yaml
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "http://localhost:3100/ready"]
+      # loki takes a bit to start
+      start_period: 30s
+      interval: 10s
+      retries: 5
+    restart: always
+
+  grafana:
+    image: grafana/grafana:9.3.6
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "http://localhost:3000/api/health"]
+      interval: 10s
+    volumes:
+      - ./config/grafana/dashboards:/etc/grafana/provisioning/dashboards/
+      - ./config/grafana/datasources:/etc/grafana/provisioning/datasources/
+      - grafana-storage:/var/lib/grafana:rw
+    restart: always
+    depends_on:
+      loki:
+        condition: service_healthy
+    ports:
+      - 3000:3000
+
+  # Neblic kafka sampler
+  kafka-sampler:
+    image: ghcr.io/neblic/kafka-sampler:v0.0.1
+    volumes:
+      - ./config/kafka-sampler/config.yaml:/etc/neblic/kafka-sampler/config.yaml
+    restart: always
+    depends_on:
+      kafka:
+        condition: service_healthy
+    environment:
+      KAFKA_SERVERS: kafka:9092
+      NEBLIC_CONTROLSERVERADDR: otelcol:8899
+      NEBLIC_DATASERVERADDR: otelcol:4317
+
+# services
+  emailservice:
+    build:
+      context: svc/src/emailservice
+    healthcheck:
+      test: ["CMD", "/bin/grpc_health_probe", "-addr=:8080"]
+      interval: 5s
+    restart: always
+    depends_on:
+      kafka:
+        condition: service_healthy
+    environment:
+      PORT: 8080
+      MAIL_HTTP_PORT: 8081
+      DISABLE_PROFILER: 1
+      EMAIL_KAFKA_ADDR: "kafka:9092"
+      EMAIL_KAFKA_TOPIC: "order-confirmation"
+      EMAIL_KAFKA_GROUP: "emailservice"
+    ports:
+      - 8081:8081
+  productcatalogservice:
+    build:
+      context: svc/src/productcatalogservice
+      dockerfile: Dockerfile
+    healthcheck:
+      test: ["CMD", "/bin/grpc_health_probe", "-addr=:3550"]
+      interval: 5s
+    restart: always
+    environment:
+      COLLECTOR_SERVICE_ADDR: "otelcol:4317"
+      PORT: 3550
+      DISABLE_PROFILER: 1
+      ENABLE_NEBLIC: 1
+      NEBLIC_CONTROL_SERVER_ADDR: "otelcol:8899"
+      NEBLIC_DATA_SERVER_ADDR: "otelcol:4317"
+  recommendationservice:
+    build:
+      context: svc/src/recommendationservice
+    healthcheck:
+      test: ["CMD", "/bin/grpc_health_probe", "-addr=:8080"]
+      interval: 5s
+    restart: always
+    environment:
+      PORT: 8080
+      PRODUCT_CATALOG_SERVICE_ADDR:  "productcatalogservice:3550"
+      DISABLE_PROFILER: 1
+      DISABLE_DEBUGGER: 1
+  shippingservice:
+    build:
+      context: svc/src/shippingservice
+      dockerfile: Dockerfile
+    healthcheck:
+      test: ["CMD", "/bin/grpc_health_probe", "-addr=:50051"]
+      interval: 5s
+    restart: always
+    environment:
+      PORT: 50051
+      DISABLE_PROFILER: 1
+      ENABLE_NEBLIC: 1
+      NEBLIC_CONTROL_SERVER_ADDR: "otelcol:8899"
+      NEBLIC_DATA_SERVER_ADDR: "otelcol:4317"
+  checkoutservice:
+    build:
+      context: svc/src/checkoutservice
+      dockerfile: Dockerfile
+    healthcheck:
+      test: ["CMD", "/bin/grpc_health_probe", "-addr=:5050"]
+      interval: 5s
+    restart: always
+    depends_on:
+      kafka:
+        condition: service_healthy
+    environment:
+      PORT: 5050
+      PRODUCT_CATALOG_SERVICE_ADDR: "productcatalogservice:3550"
+      SHIPPING_SERVICE_ADDR: "shippingservice:50051"
+      PAYMENT_SERVICE_ADDR: "paymentservice:50051"
+      EMAIL_KAFKA_ADDR: "kafka:9092"
+      EMAIL_KAFKA_TOPIC: "order-confirmation"
+      CURRENCY_SERVICE_ADDR: "currencyservice:7000"
+      CART_SERVICE_ADDR: "cartservice:7070"
+      DISABLE_PROFILER: 1
+      ENABLE_NEBLIC: 1
+      NEBLIC_CONTROL_SERVER_ADDR: "otelcol:8899"
+      NEBLIC_DATA_SERVER_ADDR: "otelcol:4317"
+  paymentservice:
+    build:
+      context: svc/src/paymentservice
+    healthcheck:
+      test: ["CMD", "/bin/grpc_health_probe", "-addr=:50051"]
+      interval: 5s
+    restart: always
+    environment:
+      PORT: 50051
+      DISABLE_PROFILER: 1
+      DISABLE_DEBUGGER: 1
+  currencyservice:
+    build:
+      context: svc/src/currencyservice
+    healthcheck:
+      test: ["CMD", "/bin/grpc_health_probe", "-addr=:7000"]
+      interval: 5s
+    restart: always
+    environment:
+      PORT: 7000
+      DISABLE_PROFILER: 1
+      DISABLE_DEBUGGER: 1
+  cartservice:
+    build:
+      context: svc/src/cartservice/src
+    healthcheck:
+      test: ["CMD", "/bin/grpc_health_probe", "-addr=:7070"]
+      interval: 5s
+    restart: always
+    environment:
+      REDIS_ADDR: "redis-cart:6379"
+  frontend:
+    build:
+      context: svc/src/frontend
+      dockerfile: Dockerfile
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "localhost:8080/_healthz"]
+      interval: 5s
+    restart: always
+    environment:
+      PORT: 8080
+      PRODUCT_CATALOG_SERVICE_ADDR: "productcatalogservice:3550"
+      CURRENCY_SERVICE_ADDR: "currencyservice:7000"
+      CART_SERVICE_ADDR: "cartservice:7070"
+      RECOMMENDATION_SERVICE_ADDR: "recommendationservice:8080"
+      SHIPPING_SERVICE_ADDR: "shippingservice:50051"
+      CHECKOUT_SERVICE_ADDR: "checkoutservice:5050"
+      AD_SERVICE_ADDR: "adservice:9555"
+      ENV_PLATFORM: "local"
+      ENABLE_PROFILER: 0
+      ENABLE_NEBLIC: 1
+      NEBLIC_CONTROL_SERVER_ADDR: "otelcol:8899"
+      NEBLIC_DATA_SERVER_ADDR: "otelcol:4317"
+    ports:
+      - 8080:8080
+  adservice:
+    build:
+      context: svc/src/adservice
+    healthcheck:
+      test: ["CMD", "/bin/grpc_health_probe", "-addr=:9555"]
+      interval: 5s
+    restart: always
+    environment:
+      PORT: 9555
+  redis-cart:
+    image: redis:7.0.8
+    healthcheck:
+      test: ["CMD", "redis-cli","ping"]
+    restart: always
+  loadgenerator:
+    build:
+      context: svc/src/loadgenerator
+    restart: always
+    environment:
+      FRONTEND_ADDR: "frontend:8080"
+      USERS: 10
+
+volumes:
+  grafana-storage:
+    name: grafana-storage
+  otelcol-storage:
+    name: otelcol-storage

@@ -1,0 +1,21 @@
+services:
+  # Neblic Opentelemetry Collector (dev)
+  otelcol:
+    image: ghcr.io/neblic/otelcol-dev:latest
+    security_opt: # Required so debugger can attach to otelcol
+      - seccomp:unconfined
+    volumes:
+      - ./config/otelcol/config.yaml:/etc/otelcol/config.yaml
+      - otelcol-storage:/var/lib/otelcol:rw
+    healthcheck:
+      test: ["CMD", "nc", "-vz", "localhost", "8000"]
+      interval: 5s
+    restart: always
+    depends_on:
+      loki:
+        condition: service_healthy
+    environment:
+      OTELCOL_CONFIG_PATH: /etc/otelcol/config.yaml
+    ports:
+      - 8899:8899 # Control port, exposed so we can connect from a locally running cli
+      - 4040:4040 # Debugging
